@@ -8,19 +8,21 @@
 # Author: Jian Yen (jdl.yen [at] gmail.com)
 # 
 # Date created: 5 July 2023
-# Date modified: 26 November 2025
+# Date modified: 12 May 2026
+
+# TODO: make summary of contrasts among scenarios in forecasts
 
 # load some packages
 library(qs)
 library(dplyr)
 library(tidyr)
+library(purrr)
 library(lubridate)
 library(aae.db)
 library(aae.hydro)
 library(aae.pop.templates)
 library(sf)
 library(ggplot2)
-library(ggspatial)
 library(ragg)
 library(rstanarm)
 library(bayesplot)
@@ -47,6 +49,40 @@ stocking <- read.csv("data/stocking.csv")
 
 # fetch hydrological data
 flow <- readRDS("data/discharge.rds")
+
+# plot hydrographs
+hydrograph <- flow |> 
+  purrr::map2(.y = names(flow), .f = \(x , y) x |> mutate(waterbody = y)) |>
+  bind_rows() |>
+  mutate(waterbody = .river_lookup[waterbody]) |>
+  ggplot(
+    aes(y = stream_discharge_mld, x = date_formatted)
+  ) +
+  geom_line() +
+  geom_ribbon(
+    aes(
+      xmin = dmy("01-07-2009"),
+      xmax = dmy("30-06-2010")
+    ),
+    alpha = 0.4
+  ) +
+  geom_ribbon(
+    aes(
+      xmin = dmy("01-07-2011"),
+      xmax = dmy("30-06-2012")
+    ),
+    alpha = 0.4
+  ) +
+  geom_ribbon(
+    aes(
+      xmin = dmy("01-07-2019"),
+      xmax = dmy("30-06-2020")
+    ),
+    alpha = 0.4
+  ) +
+  xlab("Date") +
+  ylab("Stream discharge (ML/d)") +
+  facet_wrap( ~ waterbody, scales = "free_y")
 
 # specify futures (individual years and events; can chop and change these to 
 #    create specific scenarios)
@@ -119,13 +155,13 @@ if (simulate_again) {
     metrics_observed_sp <- metrics_observed |>
       filter(species == species_list[i]) |>
       select(waterbody, water_year, all_of(get_metric_names(species_list[i])))
-
+    
     # rename a few metrics
     if (species_list[i] == "maccullochella_peelii") {
       metrics_observed_sp <- metrics_observed_sp |>
         rename(blackwater_risk = hypoxia_risk)
     }
-
+    
     # simulate for each waterbody in turn
     waterbodies <- metrics_observed_sp |> pull(waterbody) |> unique()  
     for (j in seq_along(waterbodies)) {
@@ -139,7 +175,7 @@ if (simulate_again) {
       # filter to each waterbody in turn
       metrics_observed_wb <- metrics_observed_sp |>
         filter(waterbody == waterbodies[j])
-
+      
       # specify initial conditions
       initial <- specify_initial_conditions(
         species = species_list[i],
@@ -210,7 +246,7 @@ if (simulate_again) {
         sims_observed, 
         file = paste0("outputs/simulated/observed-", species_list[i], "-", waterbodies[j], ".qs")
       )
-
+      
       # extract initial conditions for forecasts from sims_observed
       initial_future <- sims_observed[, , dim(sims_observed)[3]]
       
@@ -239,7 +275,7 @@ if (simulate_again) {
           metrics_future_sub <- metrics_future_sub |>
             rename(blackwater_risk = hypoxia_risk)
         }
-
+        
         # simulate under the specific scenario
         sims_future <- simulate_scenario(
           species = species_list[i],
@@ -284,7 +320,7 @@ chains <- 4
 cores <- 4
 use_cached <- TRUE
 cpue_mc <- estimate_cpue(
-  x = cpue, 
+  x = cpue |> filter(survey_year %in% c(2009:2023)), 
   use_cached = use_cached,
   species = "Maccullochella peelii",
   iter = iter,
@@ -293,7 +329,7 @@ cpue_mc <- estimate_cpue(
   cores = cores
 )                       
 cpue_recruit_mc <- estimate_cpue(
-  x = cpue_recruits, 
+  x = cpue_recruits |> filter(survey_year %in% c(2009:2023)), 
   recruit = TRUE,
   use_cached = use_cached,
   species = "Maccullochella peelii",
@@ -392,7 +428,8 @@ mc_recruit_futures <- plot_forecasts(
   x = mc_sim_future,
   subset = 1,
   probs = c(0.1, 0.9),
-  target = 2024
+  target = 2024,
+  marker = c(2, 4)
 )
 for (i in seq_along(mdb_systems)) {
   
@@ -428,27 +465,27 @@ ggsave(
 
 # download 2024 survey data and validate one-step forecasts for recruitment
 #   and pop growth
-cpue_recruits24 <- readRDS("data/cpue-recruits24-compiled.rds")
-cpue_adults24 <- readRDS("data/cpue-adults24-compiled.rds")
+cpue_recruits_recent <- readRDS("data/cpue-recruits-recent-compiled.rds")
+cpue_adults_recent <- readRDS("data/cpue-adults-recent-compiled.rds")
 
 # refit the statistical models with these updated data
-use_cached <- FALSE
+use_cached <- TRUE
 iter <- 4000
 warmup <- 2000
 chains <- 4
 cores <- 4
-cpue_mc24 <- estimate_cpue(
-  x = cpue_adults24, 
+cpue_mc_recent <- estimate_cpue(
+  x = cpue_adults_recent |> filter(survey_year %in% c(2009:2025)), 
   use_cached = use_cached,
   species = "Maccullochella peelii",
   iter = iter,
   warmup = warmup,
   chains = chains,
   cores = cores,
-  cache_model = FALSE
+  forecast = TRUE
 )                       
-cpue_mc_recruits24 <- estimate_cpue(
-  x = cpue_recruits24, 
+cpue_mc_recruits_recent <- estimate_cpue(
+  x = cpue_recruits_recent |> filter(survey_year %in% c(2009:2025)), 
   recruit = TRUE,
   use_cached = use_cached,
   species = "Maccullochella peelii",
@@ -456,31 +493,33 @@ cpue_mc_recruits24 <- estimate_cpue(
   warmup = warmup,
   chains = chains,
   cores = cores,
-  cache_model = FALSE
+  forecast = TRUE
 )                       
 
 # plot these future forecasts
 p_adults <- plot_forecasts_update(
-  x = list(mc_sim_future),
-  cpue = list(cpue_mc24),
+  x = mc_sim_future,
+  cpue = cpue_mc_recent,
   sciname = c("Maccullochella peelii"),
   recruit = FALSE,
-  subset = list(5:50),
-  sim_years = 2023:2025,
-  survey_max = 2024,
+  subset = 5:50,
+  sim_years = 2024:2025,
+  survey_max = 2024:2025,
   scenario_set = "baseflow",
-  future_set = "ave"
+  future_set = "ave",
+  rescale = mc_sim_obs
 )
 p_recruit <- plot_forecasts_update(
-  x = list(mc_sim_future),
-  cpue = list(cpue_mc_recruits24),
+  x = mc_sim_future,
+  cpue = cpue_mc_recruits_recent,
   sciname = c("Maccullochella peelii"),
   recruit = TRUE,
-  subset = list(1),
+  subset = 1,
   sim_years = 2023:2025,
-  survey_max = 2024,
+  survey_max = 2024:2025,
   scenario_set = "baseflow",
-  future_set = "ave"
+  future_set = "ave",
+  rescale = mc_sim_obs
 )
 
 ggsave(

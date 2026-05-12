@@ -10,7 +10,8 @@ estimate_cpue <- function(
     recruit = FALSE,
     adult = FALSE,
     use_cached = TRUE,
-    cache_model = TRUE
+    cache_model = TRUE,
+    forecast = FALSE
 ) {
   
   # check species are in correct list
@@ -19,13 +20,19 @@ estimate_cpue <- function(
   
   # use saved version if available, otherwise refit the model
   species_clean <- gsub(" ", "_", tolower(species))
+  suffix <- ""
+  if (forecast) {
+    suffix <- "-forecast"
+  }
   if (recruit) {
     species_clean <- paste0("recruit-", species_clean)
   }
   if (use_cached & any(grepl(species_clean, dir("outputs/fitted/")))) {
     
     # if exists, load fitted version
-    mod <- qread(paste0("outputs/fitted/cpue-mod-", species_clean, ".qs"))
+    mod <- qread(
+      paste0("outputs/fitted/cpue-mod-", species_clean, suffix, ".qs")
+    )
     
   } else {
     
@@ -58,7 +65,10 @@ estimate_cpue <- function(
       )
       
       if (cache_model)
-        qsave(mod, file = paste0("outputs/fitted/cpue-mod-", species_clean, ".qs"))
+        qsave(
+          mod,
+          file = paste0("outputs/fitted/cpue-mod-", species_clean, suffix, ".qs")
+        )
       
     } else {
       
@@ -88,7 +98,10 @@ estimate_cpue <- function(
       )
       
       if (cache_model)
-        qsave(mod, file = paste0("outputs/fitted/cpue-mod-", species_clean, ".qs"))
+        qsave(
+          mod,
+          file = paste0("outputs/fitted/cpue-mod-", species_clean, suffix, ".qs")
+        )
       
     }
     
@@ -181,7 +194,9 @@ add_cpue <- function(
     cpue_mod, 
     newdata = newdata,
     re.form = ~ (1 | waterbody / reach_no) +
-      (1 | survey_year)
+      (1 | survey_year) +
+      (1 | waterbody:survey_year),
+    offset = newdata$effort_h
   )
   cpue_ar1 <- tibble(
     newdata,
@@ -357,7 +372,7 @@ plot_metric <- function(x) {
   
   # set a width based on species
   width_set <- 0.45
-
+  
   # create a dummy data set that adds lines at 1/0 for the different facets
   dummy <- tibble(
     metric = factor(c("r", "MD", "RMSE", "Sign"), levels = c("r", "Sign", "RMSE", "MD")),
@@ -412,8 +427,7 @@ plot_hindcasts <- function(
     subset, 
     sim_years, 
     probs = c(0.1, 0.9), 
-    recruit = FALSE,
-    rb = FALSE
+    recruit = FALSE
 ) {
   
   # use functions above to summarise the simulated population trajectories
@@ -477,7 +491,7 @@ plot_hindcasts <- function(
 
 # function to plot near-term forecasts from start to final observed year
 plot_forecasts <- function(
-    x, subset, probs, system = NULL, target = NULL, climate = NULL, marker = NULL, rb = FALSE
+    x, subset, probs, system = NULL, target = NULL, climate = NULL, marker = NULL
 ) {
   
   # use functions above to summarise the simulated population trajectories
@@ -741,141 +755,6 @@ extract_forecasts <- function(
   
 }
 
-# plot forecasts against validation data
-plot_onestep <- function(mod, obs, species, ...) {
-  
-  # do the work to line things up
-  x <- mod |>
-    select(waterbody, scientific_name, abund_change_lower, abund_change_upper, abund_change) |>
-    left_join(
-      obs |>
-        ungroup() |>
-        mutate(
-          cpue_change_lower = (cpue_change_lower - mean(cpue_change)) / sd(cpue_change),
-          cpue_change_upper = (cpue_change_upper - mean(cpue_change)) / sd(cpue_change),
-          cpue_change = (cpue_change - mean(cpue_change)) / sd(cpue_change),
-          waterbody = paste0(tolower(gsub(" ", "_", waterbody)), "_r", reach_no)
-        ) |>
-        select(waterbody, scientific_name, cpue_change_lower, cpue_change_upper, cpue_change),
-      by = c("waterbody", "scientific_name")
-    ) |>
-    pivot_longer(
-      cols = contains("_change"),
-      values_to = "change",
-      names_to = "type"
-    ) |>
-    mutate(
-      level = ifelse(grepl("lower", type), "lower", ifelse(grepl("upper", type), "upper", "mid")),
-      type = ifelse(grepl("abund_", type), "Modelled", "Observed")
-    ) |>
-    pivot_wider(
-      id_cols = c(waterbody, scientific_name, type),
-      values_from = change,
-      names_from = level
-    )
-  
-  # plot it
-  x |>
-    mutate(
-      waterbody = .river_lookup[waterbody],
-      scientific_name = factor(
-        scientific_name,
-        levels = c("Maccullochella peelii"),
-        labels = c("Murray Cod")
-      )
-    ) |>
-    ggplot(aes(y = mid, x = waterbody, fill = type, ymin = lower, ymax = upper)) +
-    geom_hline(yintercept = 0, col = "gray60", linetype = "dashed") +
-    geom_bar(position = position_dodge(0.9), stat = "identity") +
-    geom_errorbar(position = position_dodge(0.9), width = 0.25) +
-    xlab("") +
-    ylab("Relative change (2023 to 2024)") +
-    scale_fill_brewer(palette = "Set2", name = "") +
-    facet_wrap( ~ scientific_name, scales = "free", nrow = 3) +
-    theme(
-      legend.position = "bottom", 
-      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
-    )
-  
-}
-
-# plot forecasts against validation data
-plot_onestep_trend <- function(mod, obs, ytitle = "Relative recruitment", ...) {
-  
-  # do the work to line things up
-  x <- mod |>
-    select(waterbody, scientific_name, lower_2023, lower_2024, upper_2023, upper_2024, mid_2023, mid_2024) |>
-    left_join(
-      obs |>
-        ungroup() |>
-        mutate(
-          cpue_2023_lower = (cpue_2023_lower - mean(cpue_2023)) / sd(cpue_2023),
-          cpue_2023_upper = (cpue_2023_upper - mean(cpue_2023)) / sd(cpue_2023),
-          cpue_2024_lower = (cpue_2024_lower - mean(cpue_2023)) / sd(cpue_2023),
-          cpue_2024_upper = (cpue_2024_upper - mean(cpue_2023)) / sd(cpue_2023),
-          cpue_2024 = (cpue_2024 - mean(cpue_2023)) / sd(cpue_2023),
-          cpue_2023 = (cpue_2023 - mean(cpue_2023)) / sd(cpue_2023),
-          waterbody = paste0(tolower(gsub(" ", "_", waterbody)), "_r", reach_no)
-        ) |>
-        select(
-          waterbody, scientific_name, cpue_2023_lower,
-          cpue_2023_upper, cpue_2024_lower,
-          cpue_2024_upper, cpue_2024, cpue_2023
-        ),
-      by = c("waterbody", "scientific_name")
-    ) |>
-    pivot_longer(
-      cols = c(contains("_2023"), contains("_2024")),
-      values_to = "abund",
-      names_to = "type"
-    ) |>
-    mutate(
-      mod = ifelse(grepl("cpue_", type), "Observed", "Modelled"),
-      type = gsub("cpue_", "", type),
-      year = ifelse(
-        mod == "Modelled", 
-        sapply(strsplit(type, "_"), \(x) x[2]),
-        sapply(strsplit(type, "_"), \(x) x[1])
-      ),
-      level = ifelse(
-        mod == "Modelled", 
-        sapply(strsplit(type, "_"), \(x) x[1]),
-        sapply(strsplit(type, "_"), \(x) x[2])
-      ),
-      level = ifelse(is.na(level), "mid", level)
-    ) |>
-    pivot_wider(
-      id_cols = c(waterbody, scientific_name, year, mod),
-      values_from = abund,
-      names_from = level
-    )
-  
-  # plot it
-  x |>
-    filter(year == 2024) |>
-    mutate(
-      waterbody = .river_lookup[waterbody],
-      scientific_name = factor(
-        scientific_name,
-        levels = c("Maccullochella peelii"),
-        labels = c("Murray Cod")
-      )
-    ) |>
-    ggplot(aes(y = mid, x = waterbody, fill = mod, ymin = lower, ymax = upper)) +
-    geom_bar(stat = "identity", position = position_dodge(0.9)) +
-    geom_errorbar(width = 0.25, position = position_dodge(0.9)) +
-    xlab("") +
-    ylab(ytitle) +
-    scale_fill_brewer(palette = "Set2", name = "") +
-    facet_wrap( ~ scientific_name, scales = "free", nrow = 1) +
-    theme(
-      legend.position = "bottom", 
-      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
-    )
-  
-}
-
-
 # function to create abundance forecast plots from simulated and observed data
 #   once new observed data are available
 plot_forecasts_update <- function(
@@ -888,44 +767,69 @@ plot_forecasts_update <- function(
     probs = c(0.1, 0.9), 
     recruit = FALSE,
     scenario_set = "baseflow",
-    future_set = "ave"
+    future_set = "ave",
+    rescale = NULL
 ) {
   
   # use functions above to summarise the simulated population trajectories
-  for (w in seq_along(x)) {
+  x <- mapply(
+    summarise_sim, 
+    x = x$sims,
+    y = lapply(
+      seq_len(nrow(x$scenario)),
+      \(i) x$scenario[i, ]
+    ),
+    MoreArgs = list(
+      subset = subset, probs = probs,
+      growth_rate = !recruit, zscale = FALSE
+    ),
+    SIMPLIFY = FALSE
+  )
+  
+  # z-scale by the rescale values if needed
+  if (!is.null(rescale)) {
     
-    x[[w]] <- mapply(
-      summarise_sim, 
-      x = x[[w]]$sims,
-      y = lapply(
-        seq_len(nrow(x[[w]]$scenario)),
-        \(i) x[[w]]$scenario[i, ]
-      ),
-      MoreArgs = list(
-        subset = subset[[w]], probs = probs, growth_rate = !recruit
-      ),
+    # calculate rescale values from the provided object
+    rescale_vals <- lapply(
+      rescale$sims, calc_rescale, subset = subset, recruit = recruit
+    )
+    
+    # and apply to the full data set    
+    x <- mapply(
+      \(x, y) x |>
+        mutate(
+          mid = mid - y[1],
+          mid = mid / y[2],
+          lower = lower - y[1],
+          lower = lower / y[2],
+          upper = upper - y[1],
+          upper = upper / y[2]
+        ),
+      x = x,
+      y = rescale_vals,
       SIMPLIFY = FALSE
+      
     )
-    x[[w]] <- bind_rows(x[[w]])
-    
-    # add estimated CPUE
-    x[[w]] <- add_cpue_update(
-      sim = x[[w]],
-      cpue_mod = cpue[[w]],
-      sim_years = sim_years,
-      probs = c(0.4, 0.6)
-    )
-    
-    # add scientific names
-    x[[w]] <- x[[w]] |> mutate(scientific_name = sciname[w])
     
   }
   
-  # flatten
+  # collapse all waterbodies into a single tibble
   x <- bind_rows(x)
   
-  # remove any years wtihout new data
-  x <- x |> filter(survey_year <= survey_max)
+  
+  # add estimated CPUE
+  x <- add_cpue_update(
+    sim = x,
+    cpue_mod = cpue,
+    sim_years = sim_years,
+    probs = c(0.4, 0.6)
+  )
+  
+  # add scientific names
+  x <- x |> mutate(scientific_name = sciname)
+  
+  # remove any years without new data
+  x <- x |> filter(survey_year %in% survey_max)
   
   # only need one set of future_next because we're not plotting it
   x <- x |> filter(scenario_next == "baseflow", future_next == "ave")
@@ -934,9 +838,7 @@ plot_forecasts_update <- function(
   p <- x |>
     filter(
       scenario == !!scenario_set, 
-      future == !!future_set,
-      # !(category == "Observed" & !future %in% !!future_set),
-      survey_year == survey_max
+      future == !!future_set
     ) |>
     mutate(
       waterbody = .river_lookup[waterbody],
@@ -945,7 +847,7 @@ plot_forecasts_update <- function(
         levels = c("Maccullochella peelii"),
         labels = c("Murray Cod")
       ),
-      category = factor(category, levels = c("Simulated", "Observed"))
+      category = factor(category, levels = c("Observed", "Simulated"))
     ) |>
     ggplot(aes(x = waterbody, y = mid, fill = category)) +
     geom_bar(stat = "identity", position = position_dodge(0.9)) +
@@ -966,7 +868,7 @@ plot_forecasts_update <- function(
       panel.border = element_rect(fill = NA, colour = "gray30", linetype = 1),
       strip.background = element_rect(fill = "white")
     ) +
-    facet_wrap( ~ scientific_name, scales = "free", nrow = length(sciname))
+    facet_wrap( ~ survey_year, scales = "free", nrow = length(survey_max))
   
   if (recruit) {
     p <- p + ylab("Scaled recruitment")
@@ -979,8 +881,7 @@ plot_forecasts_update <- function(
   
 }
 
-
-# function to calculate pop growth rates from obsered data and compare
+# function to calculate pop growth rates from observed data and compare
 #   to simulated values
 add_cpue_update <- function(
     sim,
@@ -992,7 +893,6 @@ add_cpue_update <- function(
   #    generate new samples from the fitted posterior for each year/waterbody,
   #    setting previous cpue to 0 to estimate growth rate directly
   #    (no need to divide by catch_ym1)
-  
   newdata <- cpue_mod$data |> 
     distinct(waterbody, reach_no, survey_year) |>
     filter(!is.na(reach_no)) |>
@@ -1005,7 +905,9 @@ add_cpue_update <- function(
     cpue_mod, 
     newdata = newdata,
     re.form = ~ (1 | waterbody / reach_no) +
-      (1 | survey_year)
+      (1 | survey_year) +
+      (1 | waterbody:survey_year),
+    offset = newdata$effort_h
   )
   cpue_ar1 <- tibble(
     newdata,
@@ -1051,12 +953,19 @@ add_cpue_update <- function(
       lower_z = (lower - center) / width,
       upper_z = (upper - center) / width
     ) |>
-    select(waterbody, survey_year, growth_rate_z, lower_z, upper_z)
+    select(
+      waterbody, survey_year, 
+      growth_rate_z, lower_z, upper_z
+    )
   
   # return this value joined to simulated pop growth rates but remove any
   #   years not surveyed yet
   sim |> 
-    left_join(cpue_ar1, by = c("waterbody", "survey_year")) |>
+    left_join(
+      cpue_ar1 |>
+        mutate(survey_year = as.integer(survey_year)),
+      by = c("waterbody", "survey_year")
+    ) |>
     pivot_longer(
       cols = c(mid, growth_rate_z, lower, lower_z, upper, upper_z),
       values_to = "value",
@@ -1072,5 +981,22 @@ add_cpue_update <- function(
       names_from = type,
       values_from = value
     )
+  
+}
+
+# function to calculate mean and SD to rescale trajectories
+calc_rescale <- function(x, subset, recruit) {
+  
+  # summarise trajectories
+  rescale <- apply(x[, subset, , drop = FALSE], c(1, 3), sum)
+  
+  # calculate growth rate if adults
+  if (!recruit) {
+    rescale[rescale == 0] <- min(rescale[rescale > 0], na.rm = TRUE) / 2.0
+    rescale <- rescale / rescale[, c(1L, seq_len(ncol(rescale) - 1L))]
+  }
+  
+  # return the mean and SD
+  c(mean(rescale), sd(rescale))
   
 }
