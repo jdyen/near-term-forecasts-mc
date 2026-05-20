@@ -8,9 +8,7 @@
 # Author: Jian Yen (jdl.yen [at] gmail.com)
 # 
 # Date created: 5 July 2023
-# Date modified: 12 May 2026
-
-# TODO: make summary of contrasts among scenarios in forecasts
+# Date modified: 20 May 2026
 
 # load some packages
 library(qs)

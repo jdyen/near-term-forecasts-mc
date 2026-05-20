@@ -570,6 +570,21 @@ plot_forecasts <- function(
     # two options: simpler plot if only showing one step ahead
     if (one_step_ahead) {
       
+      # standardise to show relative change
+      x <- x |>
+        left_join(
+          x |>
+            filter(scenario == "None", scenario_next == "None"),
+          by = join_by(waterbody, future, future_next),
+          suffix = c("", "_baseline")
+        ) |>
+        mutate(
+          mid = (mid - mid_baseline) / mid_baseline,
+          lower = (lower - mid_baseline) / mid_baseline,
+          upper = (upper - mid_baseline) / mid_baseline
+        ) |>
+        filter(scenario != "None")
+      
       p <- x |>
         filter(
           future_next == "Ave. (2024/2025)",
@@ -611,6 +626,21 @@ plot_forecasts <- function(
           call. = FALSE
         )
       
+      # standardise to show relative change
+      x <- x |>
+        left_join(
+          x |>
+            filter(scenario == "None"),
+          by = join_by(waterbody, future, future_next, scenario_next),
+          suffix = c("", "_baseline")
+        ) |>
+        mutate(
+          mid = (mid - mid_baseline) / mid_baseline,
+          lower = (lower - mid_baseline) / mid_baseline,
+          upper = (upper - mid_baseline) / mid_baseline
+        ) |>
+        filter(scenario != "None")
+      
       #  plot it
       p <- x |>
         mutate(survey_year = factor(survey_year)) |>
@@ -638,6 +668,21 @@ plot_forecasts <- function(
     }
     
   } else {
+    
+    # standardise to show relative change
+    x <- x |>
+      left_join(
+        x |>
+          filter(scenario == "None"),
+        by = join_by(waterbody, future, future_next, scenario_next),
+        suffix = c("", "_baseline")
+      ) |>
+      mutate(
+        mid = (mid - mid_baseline) / mid_baseline,
+        lower = (lower - mid_baseline) / mid_baseline,
+        upper = (upper - mid_baseline) / mid_baseline
+      ) |>
+      filter(scenario != "None")
     
     # show just a single climate for 2023/24 then all for 2024/25
     #  plot it
