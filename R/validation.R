@@ -114,7 +114,9 @@ estimate_cpue <- function(
 
 # function to calculate mid, lower, and upper bounds from simulated
 #   trajectories
-summarise_sim <- function(x, y, subset, probs, growth_rate = TRUE, zscale = TRUE) {
+summarise_sim <- function(
+    x, y, subset, probs, growth_rate = TRUE, zscale = TRUE, raw = FALSE
+) {
   
   # pull out abundances for the subset of ages/stages
   abund <- apply(x[, subset, , drop = FALSE], c(1, 3), sum)
@@ -156,13 +158,22 @@ summarise_sim <- function(x, y, subset, probs, growth_rate = TRUE, zscale = TRUE
     
   }
   
-  # collate raw predicted values, dropping first column
-  out <- tibble(
-    y,
-    mid = apply(abund, 2, median),
-    lower = apply(abund, 2, quantile, probs = probs[1]),
-    upper = apply(abund, 2, quantile, probs = probs[2])
-  )
+  # return raw abund outputs if needed
+  if (raw) {
+    
+    out <- abund
+    
+  } else {
+    
+    # collate raw predicted values, dropping first column
+    out <- tibble(
+      y,
+      mid = apply(abund, 2, median),
+      lower = apply(abund, 2, quantile, probs = probs[1]),
+      upper = apply(abund, 2, quantile, probs = probs[2])
+    )
+    
+  }
   
   # return
   out
@@ -496,7 +507,7 @@ plot_forecasts <- function(
   
   # use functions above to summarise the simulated population trajectories
   nscn <- nrow(x$scenario)
-  x <- mapply(
+  xraw <- mapply(
     summarise_sim, 
     x = x$sims,
     y = lapply(
@@ -504,10 +515,53 @@ plot_forecasts <- function(
       \(i) x$scenario[i, ]
     ),
     MoreArgs = list(
-      subset = subset, probs = probs, growth_rate = FALSE, zscale = FALSE
+      subset = subset,
+      probs = probs,
+      growth_rate = FALSE, 
+      zscale = FALSE,
+      raw = TRUE
     ),
     SIMPLIFY = FALSE
   )
+  
+  # work out the index for the relevant baseline scenario
+  #   (none/none under the same future/future_next)
+  idx <- x$scenario |>
+    mutate(id = seq_len(nrow(x$scenario)))
+  idx <- idx |>
+    select(-id) |>
+    left_join(
+      idx |> 
+        filter(scenario == "none", scenario_next == "none") |>
+        select(!contains("scenario")),
+      by = join_by(waterbody, future, future_next)
+    )
+  
+  # work through each element of xraw, and divide by the relevant id
+  xraw <- mapply(
+    \(x, y) x - y, 
+    x = xraw,
+    y = xraw[idx$id],
+    SIMPLIFY = FALSE
+  )
+  
+  # collate raw predicted values, dropping first column
+  x <- mapply(
+    \(x, y) tibble(
+      y,
+      mid = apply(x, 2, median),
+      lower = apply(x, 2, quantile, probs = probs[1]),
+      upper = apply(x, 2, quantile, probs = probs[2])
+    ),
+    x = xraw,
+    y = lapply(
+      seq_len(nscn),
+      \(i) x$scenario[i, ]
+    ),
+    SIMPLIFY = FALSE
+  )
+  
+  # collapse into a single tibble
   x <- bind_rows(x)
   
   # add year information
@@ -549,9 +603,9 @@ plot_forecasts <- function(
   # filter to target water year
   x <- x |> filter(survey_year == target)
   
-  # filter to a single system if required
+  # filter to target systems if required
   if (!is.null(system))
-    x <- x |> filter(waterbody == system)
+    x <- x |> filter(waterbody %in% system)
   
   # add labels to mark "poor" performers if required
   x <- x |>
@@ -564,26 +618,16 @@ plot_forecasts <- function(
       mutate(waterbody = new_names[waterbody])
   }
   
+  # drop out the baseline scenario (all others are compared to this)
+  x <- x |>
+    filter(scenario != "None")
+  
+  
   # if showing all climates, need a plot that expands out
   if (is.null(climate)) {
     
     # two options: simpler plot if only showing one step ahead
     if (one_step_ahead) {
-      
-      # standardise to show relative change
-      x <- x |>
-        left_join(
-          x |>
-            filter(scenario == "None", scenario_next == "None"),
-          by = join_by(waterbody, future, future_next),
-          suffix = c("", "_baseline")
-        ) |>
-        mutate(
-          mid = (mid - mid_baseline) / mid_baseline,
-          lower = (lower - mid_baseline) / mid_baseline,
-          upper = (upper - mid_baseline) / mid_baseline
-        ) |>
-        filter(scenario != "None")
       
       p <- x |>
         filter(
@@ -602,7 +646,7 @@ plot_forecasts <- function(
           width = 0.2
         ) +
         xlab("Climate state") +
-        ylab("Abundance") +
+        ylab("Change in abundance") +
         scale_fill_brewer(name = "Flow priority", palette = "Set2") +
         ggthemes::theme_hc() +
         theme(
@@ -615,6 +659,8 @@ plot_forecasts <- function(
       # and add a facet wrap if system is not specified
       if (is.null(system))
         p <- p + facet_wrap( ~ waterbody, scales = "free")
+      if (length(system) > 1)
+        p <- p + facet_wrap( ~ waterbody, scales = "free")
       
     } else {
       
@@ -625,21 +671,6 @@ plot_forecasts <- function(
           "time steps ahead",
           call. = FALSE
         )
-      
-      # standardise to show relative change
-      x <- x |>
-        left_join(
-          x |>
-            filter(scenario == "None"),
-          by = join_by(waterbody, future, future_next, scenario_next),
-          suffix = c("", "_baseline")
-        ) |>
-        mutate(
-          mid = (mid - mid_baseline) / mid_baseline,
-          lower = (lower - mid_baseline) / mid_baseline,
-          upper = (upper - mid_baseline) / mid_baseline
-        ) |>
-        filter(scenario != "None")
       
       #  plot it
       p <- x |>
@@ -653,7 +684,7 @@ plot_forecasts <- function(
           width = 0.2
         ) +
         xlab("Flow priority (2024/2025)") +
-        ylab("Abundance") +
+        ylab("Change in abundance") +
         scale_fill_brewer(name = "Flow priority (2023/2024)", palette = "Set2") +
         facet_grid(future_next ~ future) +
         ggthemes::theme_hc() +
@@ -669,21 +700,6 @@ plot_forecasts <- function(
     
   } else {
     
-    # standardise to show relative change
-    x <- x |>
-      left_join(
-        x |>
-          filter(scenario == "None"),
-        by = join_by(waterbody, future, future_next, scenario_next),
-        suffix = c("", "_baseline")
-      ) |>
-      mutate(
-        mid = (mid - mid_baseline) / mid_baseline,
-        lower = (lower - mid_baseline) / mid_baseline,
-        upper = (upper - mid_baseline) / mid_baseline
-      ) |>
-      filter(scenario != "None")
-    
     # show just a single climate for 2023/24 then all for 2024/25
     #  plot it
     p <- x |>
@@ -698,7 +714,7 @@ plot_forecasts <- function(
         width = 0.2
       ) +
       xlab("Flow priority (2024/2025)") +
-      ylab("Abundance") +
+      ylab("Change in abundance") +
       scale_fill_brewer(name = "Flow priority (2023/2024)", palette = "Set2") +
       facet_grid( ~ future_next) +
       ggthemes::theme_hc() +
@@ -877,7 +893,7 @@ plot_forecasts_update <- function(
   x <- x |> filter(survey_year %in% survey_max)
   
   # only need one set of future_next because we're not plotting it
-  x <- x |> filter(scenario_next == "baseflow", future_next == "ave")
+  x <- x |> filter(scenario_next == "none", future_next == "ave")
   
   # set up base plot
   p <- x |>
@@ -1043,5 +1059,174 @@ calc_rescale <- function(x, subset, recruit) {
   
   # return the mean and SD
   c(mean(rescale), sd(rescale))
+  
+}
+
+
+# function to create abundance forecast plots from simulated and observed data
+#   once new observed data are available
+calculate_metric_update <- function(
+    x, 
+    cpue, 
+    subset, 
+    sciname,
+    sim_years, 
+    survey_max,
+    probs = c(0.1, 0.9), 
+    recruit = FALSE,
+    scenario_set = "baseflow",
+    future_set = "ave",
+    rescale = NULL
+) {
+  
+  # use functions above to summarise the simulated population trajectories
+  x <- mapply(
+    summarise_sim, 
+    x = x$sims,
+    y = lapply(
+      seq_len(nrow(x$scenario)),
+      \(i) x$scenario[i, ]
+    ),
+    MoreArgs = list(
+      subset = subset, probs = probs,
+      growth_rate = !recruit, zscale = FALSE
+    ),
+    SIMPLIFY = FALSE
+  )
+  
+  # z-scale by the rescale values if needed
+  if (!is.null(rescale)) {
+    
+    # calculate rescale values from the provided object
+    rescale_vals <- lapply(
+      rescale$sims, calc_rescale, subset = subset, recruit = recruit
+    )
+    
+    # and apply to the full data set    
+    x <- mapply(
+      \(x, y) x |>
+        mutate(
+          mid = mid - y[1],
+          mid = mid / y[2],
+          lower = lower - y[1],
+          lower = lower / y[2],
+          upper = upper - y[1],
+          upper = upper / y[2]
+        ),
+      x = x,
+      y = rescale_vals,
+      SIMPLIFY = FALSE
+      
+    )
+    
+  }
+  
+  # collapse all waterbodies into a single tibble
+  x <- bind_rows(x)
+  
+  # add estimated CPUE
+  x <- add_cpue_update(
+    sim = x,
+    cpue_mod = cpue,
+    sim_years = sim_years,
+    probs = c(0.4, 0.6)
+  )
+  
+  # add scientific names
+  x <- x |> mutate(scientific_name = sciname)
+  
+  # remove any years without new data
+  x <- x |> filter(survey_year %in% survey_max)
+  
+  # filter to target scenarios and futures
+  x <- x |>
+    filter(scenario_next == "none", future_next == "ave")
+
+  # calculate metrics and return
+  x |>
+    select(waterbody, scenario, future, survey_year, category, mid) |>
+    pivot_wider(
+      id_cols = c(waterbody, survey_year, scenario, future),
+      names_from = category, 
+      values_from = mid
+    ) |> 
+    group_by(waterbody) |> 
+    summarise(
+      sign = mean(sign(Simulated) == sign(Observed)), 
+      rmse = sqrt(mean((Simulated - Observed) ^ 2)),
+      md = mean(Simulated - Observed)
+    )
+  
+}
+
+# function to plot validation metrics for one or more rivers at a time
+plot_metric_update <- function(x) {
+  
+  # prepare data
+  x <- x |>
+    pivot_longer(
+      cols = c(md, rmse, sign),
+      names_to = "name",
+      values_to = "value"
+    ) |>
+    mutate(
+      waterbody = tidy_names(waterbody),
+      metric = metric_names[name],
+      metric = factor(metric, levels = c("Sign", "RMSE", "MD")),
+      species = factor(
+        species,
+        levels = c(
+          "Murray Cod", "Murray Cod (young of year)"
+        )
+      )
+    )
+  
+  # work out level and labels for text
+  x <- x |>
+    left_join(
+      x |> 
+        group_by(metric) |> 
+        summarise(level = median(value, na.rm = TRUE)),
+      by = "metric"
+    ) |>
+    mutate(label = ifelse(is.na(value), "*", ""))
+  
+  # set a width based on species
+  width_set <- 0.45
+  
+  # create a dummy data set that adds lines at 1/0 for the different facets
+  dummy <- tibble(
+    metric = factor(c("MD", "RMSE", "Sign"), levels = c("Sign", "RMSE", "MD")),
+    height = c(0, 0, 1)
+  )
+  
+  # plot 
+  p <- x |>
+    ggplot(aes(y = value, x = waterbody, fill = species)) + 
+    geom_bar(position = position_dodge(width = 0.9, preserve = "single"), stat = "identity") +
+    geom_text(
+      aes(y = level, label = label), 
+      position = position_dodge(width = width_set, preserve = "single")
+    ) +
+    geom_hline(data = dummy, aes(yintercept = height), col = "gray30", linewidth = 1.25) +
+    ylab("Value") +
+    xlab("Waterbody") +
+    facet_wrap( ~ metric, scales = "free") +
+    scale_fill_brewer(palette = "Set2", name = "") +
+    ggthemes::theme_hc() +
+    theme(
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 8),
+      axis.text.x = element_text(angle = 60, hjust = 1),
+      panel.border = element_rect(fill = NA, colour = "gray30", linetype = 1),
+      strip.background = element_rect(fill = "white")
+    )
+  
+  # remove legend if just one species
+  if (length(unique(x$species)) == 1)
+    p <- p + theme(legend.position = "none")
+  
+  # return
+  p
   
 }

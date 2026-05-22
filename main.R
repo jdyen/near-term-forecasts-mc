@@ -8,7 +8,7 @@
 # Author: Jian Yen (jdl.yen [at] gmail.com)
 # 
 # Date created: 5 July 2023
-# Date modified: 20 May 2026
+# Date modified: 22 May 2026
 
 # load some packages
 library(qs)
@@ -25,6 +25,7 @@ library(ragg)
 library(rstanarm)
 library(bayesplot)
 library(patchwork)
+library(scico)
 
 # and some load helpers
 source("R/utils.R")
@@ -81,6 +82,16 @@ hydrograph <- flow |>
   xlab("Date") +
   ylab("Stream discharge (ML/d)") +
   facet_wrap( ~ waterbody, scales = "free_y")
+ggsave(
+  filename = "outputs/figures/hydrograph.png",
+  plot = hydrograph,
+  device = ragg::agg_png,
+  width = 10,
+  height = 6,
+  units = "in",
+  dpi = 600,
+  bg = "white"
+)
 
 # specify futures (individual years and events; can chop and change these to 
 #    create specific scenarios)
@@ -427,7 +438,7 @@ mc_recruit_futures <- plot_forecasts(
   subset = 1,
   probs = c(0.1, 0.9),
   target = 2024,
-  marker = c(2, 4)
+  system = c("broken_creek_r4", "broken_river_r3", "goulburn_river_r4")
 )
 for (i in seq_along(mdb_systems)) {
   
@@ -455,8 +466,8 @@ ggsave(
   filename = "outputs/figures/futures-mc-recruits.png",
   plot = mc_recruit_futures,
   device = ragg::agg_png,
-  width = 7.5,
-  height = 5,
+  width = 8,
+  height = 4,
   units = "in",
   dpi = 600
 )
@@ -520,12 +531,43 @@ p_recruit <- plot_forecasts_update(
   rescale = mc_sim_obs
 )
 
+# calculate metrics related to the forecasts
+metrics_update_adult <- calculate_metric_update(
+  x = mc_sim_future,
+  cpue = cpue_mc_recent,
+  sciname = c("Maccullochella peelii"),
+  recruit = FALSE,
+  subset = 5:50,
+  sim_years = 2024:2025,
+  survey_max = 2024:2025,
+  scenario_set = "baseflow",
+  future_set = "ave",
+  rescale = mc_sim_obs
+)
+metrics_update_recruit <- calculate_metric_update(
+  x = mc_sim_future,
+  cpue = cpue_mc_recruits_recent,
+  sciname = c("Maccullochella peelii"),
+  recruit = TRUE,
+  subset = 1,
+  sim_years = 2023:2025,
+  survey_max = 2024:2025,
+  scenario_set = "baseflow",
+  future_set = "ave",
+  rescale = mc_sim_obs
+)
+sim_metrics_update <- bind_rows(
+  metrics_update_adult |> mutate(species = "Murray Cod"),
+  metrics_update_recruit |> mutate(species = "Murray Cod (young of year)")
+)
+metrics_plot_update <- plot_metric_update(sim_metrics_update)
+
 ggsave(
   filename = "outputs/figures/forecast-validation.png",
   plot = p_adults + theme(axis.title.y = element_text(margin = margin(l = 18), vjust = 9)),
   device = ragg::agg_png,
   width = 6,
-  height = 3,
+  height = 6,
   units = "in",
   dpi = 600
 )
@@ -534,7 +576,16 @@ ggsave(
   plot = p_recruit + theme(axis.title.y = element_text(margin = margin(l = 18), vjust = 9)),
   device = ragg::agg_png,
   width = 6,
-  height = 3,
+  height = 6,
+  units = "in",
+  dpi = 600
+)
+ggsave(
+  filename = "outputs/figures/metrics-mc-update.png",
+  plot = metrics_plot_update,
+  device = ragg::agg_png,
+  width = 6,
+  height = 4,
   units = "in",
   dpi = 600
 )
