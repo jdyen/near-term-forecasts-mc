@@ -54,8 +54,16 @@ hydrograph <- flow |>
   purrr::map2(.y = names(flow), .f = \(x , y) x |> mutate(waterbody = y)) |>
   bind_rows() |>
   mutate(waterbody = .river_lookup[waterbody]) |>
+  pivot_longer(c(stream_discharge_mld, water_temperature_c)) |>
+  mutate(
+    name = factor(
+      name,
+      levels = c("stream_discharge_mld", "water_temperature_c"),
+      labels = c("Stream discharge (ML/d)", "Water temperature (C)")
+    )
+  ) |>
   ggplot(
-    aes(y = stream_discharge_mld, x = date_formatted)
+    aes(y = value, x = date_formatted)
   ) +
   geom_line() +
   geom_ribbon(
@@ -80,14 +88,14 @@ hydrograph <- flow |>
     alpha = 0.4
   ) +
   xlab("Date") +
-  ylab("Stream discharge (ML/d)") +
-  facet_wrap( ~ waterbody, scales = "free_y")
+  ylab("Value") +
+  facet_wrap(waterbody ~ name, scales = "free_y", ncol = 2)
 ggsave(
   filename = "outputs/figures/hydrograph.png",
   plot = hydrograph,
   device = ragg::agg_png,
-  width = 10,
-  height = 6,
+  width = 9,
+  height = 11,
   units = "in",
   dpi = 600,
   bg = "white"
