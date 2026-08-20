@@ -8,7 +8,7 @@
 # Author: Jian Yen (jdl.yen [at] gmail.com)
 # 
 # Date created: 5 July 2023
-# Date modified: 22 May 2026
+# Date modified: 14 August 2026
 
 # load some packages
 library(qs)
@@ -19,6 +19,7 @@ library(lubridate)
 library(aae.db)
 library(aae.hydro)
 library(aae.pop.templates)
+library(popbio)
 library(sf)
 library(ggplot2)
 library(ragg)
@@ -163,6 +164,8 @@ metrics_2025 <- metrics_future |>
 metrics_future <- bind_rows(metrics_2024, metrics_2025)
 
 # simulate for each species in turn (if required)
+#   (only one species included here, but retained for generalisation to
+#    more species)
 if (simulate_again) {
   
   species_list <- metrics_observed |> pull(species) |> unique()
@@ -179,9 +182,96 @@ if (simulate_again) {
         rename(blackwater_risk = hypoxia_risk)
     }
     
-    # simulate for each waterbody in turn
+    # list unique waterbodies
     waterbodies <- metrics_observed_sp |> pull(waterbody) |> unique()  
+    
+    # set up an object to store sensitivity outputs if needed
+    if (species_list[i] == "maccullochella_peelii") {
+      metrics_out <- vector("list", length = length(waterbodies))
+    }
+    
+    # simulate for each waterbody in turn
     for (j in seq_along(waterbodies)) {
+      
+      # sensitivity analysis to see how different parameters affect outcomes
+      if (species_list[i] == "maccullochella_peelii") {
+        
+        # grab the population matrix
+        pop_sens <- specify_pop_model(
+          species = "maccullochella_peelii",
+          waterbody = metrics_observed |> slice(j) |> pull(waterbody) |> unique(),
+          ntime = 20, 
+          nstocked = rep(0, 20),
+          k = 50000
+        )
+        
+        # calculate basic sensitivity parameters for a high-level sense check
+        #   (only once because the matrix doesn't change with waterbody)
+        if (j == 1) {
+          
+          # use popbio functions to help this
+          sens <- sensitivity(pop_sens$dynamics$matrix, zero = TRUE)
+          elas <- elasticity(pop_sens$dynamics$matrix)
+          
+          # collate all
+          sens_metrics <- tibble(
+            x = rep(seq_len(sum(transition(sens))), times = 4),
+            value = c(
+              sens[transition(sens)],
+              sens[reproduction(sens)],
+              elas[transition(elas)],
+              elas[reproduction(elas)]
+            ),
+            parameter = rep(
+              c("Sensitivity", "Elasticity"), 
+              each = sum(transition(sens)) + sum(reproduction(sens))
+            ),
+            rate = rep(
+              rep(
+                c("Survival", "Recruitment"), 
+                each = sum(transition(sens))
+              ),
+              times = 2
+            )
+          )
+          
+        }
+        
+        # extract the coefficients for the each flow variable
+        coefs <- get_coefs(species_list[i], waterbodies[j])
+        coefs <- c(coefs, -50)
+        names(coefs) <- c(
+          "spawning_flow_variability", 
+          "proportional_spring_flow", 
+          "proportional_max_antecedent", 
+          "proportional_summer_flow", 
+          "proportional_winter_flow", 
+          "spawning_temperature",
+          "blackwater_risk"
+        )
+        
+        # calculate the average (+ bounds) for each metric for a waterbody
+        metrics_sens <- metrics_observed_sp |>
+          filter(waterbody == waterbodies[j]) |>
+          select(all_of(names(coefs)))
+        metrics_sens <- tibble(
+          waterbody = waterbodies[j],
+          var = names(coefs),
+          lower = apply(metrics_sens, 2, quantile, probs = 0.1),
+          mid = apply(metrics_sens, 2, quantile, probs = 0.5),
+          upper = apply(metrics_sens, 2, quantile, probs = 0.9),
+          coefs = coefs / 100
+        )
+        
+        # multiply coefs by metrics
+        metrics_out[[j]] <- metrics_sens |>
+          mutate(
+            lower = coefs * lower,
+            mid = coefs * mid,
+            upper = coefs * upper
+          )
+        
+      }
       
       # extract carrying capacity for species and reach
       k <- flow_futures |> 
@@ -321,6 +411,11 @@ if (simulate_again) {
       
     }
     
+    # flatten the sensitivity and elasticity outputs
+    metrics_out <- bind_rows(metrics_out)
+    write.csv(sens_metrics, file = "outputs/sensitivity/metrics.csv")
+    write.csv(metrics_out, file = "outputs/sensitivity/coef-effects.csv")
+    
   }
   
 }
@@ -354,6 +449,47 @@ cpue_recruit_mc <- estimate_cpue(
   warmup = warmup,
   chains = chains,
   cores = cores
+)
+
+# grab diagnostics
+diag_mc <- tibble(
+  rhat = rhat(cpue_mc),
+  neff = neff_ratio(cpue_mc)
+)
+diag_recruit <- tibble(
+  rhat = rhat(cpue_recruit_mc),
+  neff = neff_ratio(cpue_recruit_mc)
+)
+diag_mc <- diag_mc |>
+  pivot_longer(everything()) |>
+  mutate(model = "Total population") |>
+  bind_rows(
+    diag_recruit |>
+      pivot_longer(everything()) |>
+      mutate(model = "Young-of-year")
+  )
+p_diag <- diag_mc |>
+  mutate(
+    name = factor(
+      name, 
+      levels = c("rhat", "neff"),
+      labels = c("Gelman-Rubin statistic (R-hat)", "Effective sample size ratio")
+    )
+  ) |>
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  xlab("Value") +
+  ylab("Count") +
+  facet_wrap(model ~ name, scales = "free")
+ggsave(
+  filename = "outputs/figures/mc-diagnostics.png",
+  plot = p_diag,
+  device = ragg::agg_png,
+  width = 6,
+  height = 6,
+  units = "in",
+  dpi = 600,
+  bg = "white"
 )
 
 # posterior checks (saved to figures)
@@ -486,7 +622,7 @@ cpue_recruits_recent <- readRDS("data/cpue-recruits-recent-compiled.rds")
 cpue_adults_recent <- readRDS("data/cpue-adults-recent-compiled.rds")
 
 # refit the statistical models with these updated data
-use_cached <- TRUE
+use_cached <- FALSE
 iter <- 4000
 warmup <- 2000
 chains <- 4
@@ -594,6 +730,92 @@ ggsave(
   device = ragg::agg_png,
   width = 6,
   height = 4,
+  units = "in",
+  dpi = 600
+)
+
+# plot the sensitivity analysis outputs
+sens_metrics <- read.csv("outputs/sensitivity/metrics.csv", row.names = 1)
+coef_effects <- read.csv("outputs/sensitivity/coef-effects.csv", row.names = 1)
+
+# sens/elasticity first
+p_sens <- sens_metrics |>
+  mutate(x = ifelse(rate == "Recruitment", x + 1, x)) |>
+  ggplot(aes(y = value, x = x)) +
+  geom_point(col = "grey40") +
+  facet_grid(rate ~ parameter, scales = "free") +
+  xlab("Age class") +
+  ylab("Estimate") +
+  ggthemes::theme_hc() +
+  theme(
+    axis.text = element_text(size = 8),
+    panel.border = element_rect(fill = NA, colour = "gray30", linetype = 1),
+    strip.background = element_rect(fill = "white")
+  )
+ggsave(
+  filename = "outputs/figures/sensitivity-metrics.png",
+  plot = p_sens,
+  device = ragg::agg_png,
+  width = 7,
+  height = 5,
+  units = "in",
+  dpi = 600
+)
+
+# plot the coefficient impacts next
+coef_lookup <- c(
+  "spawning_flow_variability" = "Flow variability", 
+  "proportional_spring_flow" = "Spring flow",
+  "proportional_max_antecedent" = "Max. antecedent flow",
+  "proportional_summer_flow" = "Summer flow", 
+  "proportional_winter_flow" = "Winter flow", 
+  "spawning_temperature" = "Water temp. (spawning)",
+  "blackwater_risk" = "Hypoxia risk"
+)
+rescale <- sens_metrics |> 
+  filter(parameter == "Elasticity") |>
+  group_by(rate) |> 
+  summarise(max = max(value)) |> 
+  ungroup()
+p_coef_sens <- coef_effects |>
+  mutate(
+    waterbody = .river_lookup[waterbody],
+    var = coef_lookup[var],
+    lower = ifelse(
+      var == "blackwater_risk",
+      rescale |> filter(rate == "Survival") |> pull(max) * lower,
+      rescale |> filter(rate == "Recruitment") |> pull(max) * lower
+    ),
+    mid = ifelse(
+      var == "blackwater_risk",
+      rescale |> filter(rate == "Survival") |> pull(max) * mid,
+      rescale |> filter(rate == "Recruitment") |> pull(max) * mid
+    ),
+    upper = ifelse(
+      var == "blackwater_risk",
+      rescale |> filter(rate == "Survival") |> pull(max) * upper,
+      rescale |> filter(rate == "Recruitment") |> pull(max) * upper
+    )
+  ) |>
+  ggplot(aes(y = mid, ymin = lower, ymax = upper, x = var, fill = waterbody)) +
+  geom_bar(stat = "identity", position = position_dodge(0.9)) +
+  geom_errorbar(position = position_dodge(0.9), width = 0.6, linewidth = 0.3) +
+  xlab("") +
+  ylab("Coefficient effect") +
+  scale_fill_brewer(name = "", palette = "Set2") +
+  ggthemes::theme_hc() +
+  theme(
+    legend.position = "bottom",
+    axis.text = element_text(size = 8),
+    panel.border = element_rect(fill = NA, colour = "gray30", linetype = 1),
+    strip.background = element_rect(fill = "white")
+  )
+ggsave(
+  filename = "outputs/figures/sensitivity-coefficients.png",
+  plot = p_coef_sens,
+  device = ragg::agg_png,
+  width = 8,
+  height = 5,
   units = "in",
   dpi = 600
 )

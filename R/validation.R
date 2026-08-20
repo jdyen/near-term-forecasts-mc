@@ -43,7 +43,7 @@ estimate_cpue <- function(
       group_by(id_site, waterbody, reach_no, survey_year) |>
       summarise(
         catch = sum(catch),
-        effort_h = sum(effort_h)
+        log_effort_h = log(sum(effort_h))
       ) |>
       ungroup()
     
@@ -55,7 +55,7 @@ estimate_cpue <- function(
           (1 | id_site) +
           (1 | survey_year) +
           (1 | waterbody:survey_year) +
-          offset(effort_h),
+          offset(log_effort_h),
         family = poisson,
         data = x,
         iter = iter,
@@ -78,14 +78,14 @@ estimate_cpue <- function(
           (1 | id_site) +
           (1 | survey_year) +
           (1 | waterbody:survey_year) +
-          offset(effort_h),
+          offset(log_effort_h),
         family = poisson,
         data = x |> 
           left_join(
             x |>
               mutate(
                 survey_year = survey_year + 1,
-                log_cpue_ym1 = log(catch + 1) - log(effort_h)
+                log_cpue_ym1 = log(catch + 1) - log_effort_h
               ) |>
               select(id_site, survey_year, log_cpue_ym1),
             by = c("id_site", "survey_year")
@@ -198,7 +198,7 @@ add_cpue <- function(
     filter(!is.na(reach_no)) |>
     mutate(
       log_cpue_ym1 = 0,
-      effort_h = 1,
+      log_effort_h = 0,
       id_site = "abc"
     )
   cpue_pred <- posterior_epred(
@@ -207,7 +207,7 @@ add_cpue <- function(
     re.form = ~ (1 | waterbody / reach_no) +
       (1 | survey_year) +
       (1 | waterbody:survey_year),
-    offset = newdata$effort_h
+    offset = newdata$log_effort_h
   )
   cpue_ar1 <- tibble(
     newdata,
@@ -959,7 +959,7 @@ add_cpue_update <- function(
     filter(!is.na(reach_no)) |>
     mutate(
       log_cpue_ym1 = 0,
-      effort_h = 1,
+      log_effort_h = 0,
       id_site = "abc"
     )
   cpue_pred <- posterior_epred(
@@ -968,7 +968,7 @@ add_cpue_update <- function(
     re.form = ~ (1 | waterbody / reach_no) +
       (1 | survey_year) +
       (1 | waterbody:survey_year),
-    offset = newdata$effort_h
+    offset = newdata$log_effort_h
   )
   cpue_ar1 <- tibble(
     newdata,
